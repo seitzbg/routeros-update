@@ -1,0 +1,10 @@
+# Ansible-format inventory. Only the `routeros` group is read; every host under
+# it is a MikroTik switch reachable over SSH with key auth. `ansible_user`
+# defaults to "admin" if omitted. Copy to inventory.yml and edit.
+routeros:
+  hosts:
+    sw1.example.net:
+      ansible_user: admin
+    sw2.example.net:
+      ansible_user: admin
+    sw3.example.net: {}          # ansible_user defaults to admin
