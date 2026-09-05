@@ -23,12 +23,13 @@ nothing). Pass --upgrade to actually download, push, and reboot.
     ./routeros-update.py --upgrade --version 7.24.2  # pin an exact target
 
 The switch list is read from an Ansible-format inventory YAML (default:
-./inventory.yml, override with --inventory); see example-inventory.yml.
-Requires netmiko, PyYAML, and rich (see requirements.txt).
+$ROUTEROS_INVENTORY or ./inventory.yml, override with --inventory); see
+example-inventory.yml. Requires netmiko, PyYAML, and rich.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import socket
 import subprocess
@@ -367,8 +368,9 @@ def main(argv=None) -> int:
     p.add_argument("--only", nargs="+", metavar="HOST", help="limit to these switch hostnames")
     p.add_argument("--version", help="pin an exact target version (skip CDN discovery)")
     p.add_argument("--no-firmware", action="store_true", help="skip the RouterBOARD firmware step")
-    p.add_argument("--inventory", type=Path, default=Path("inventory.yml"),
-                   help="Ansible-format inventory YAML with a routeros group (default: ./inventory.yml)")
+    p.add_argument("--inventory", type=Path, default=Path(os.environ.get("ROUTEROS_INVENTORY", "inventory.yml")),
+                   help="Ansible-format inventory YAML with a routeros group "
+                        "(default: $ROUTEROS_INVENTORY or ./inventory.yml)")
     p.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache" / "routeros-update")
     p.add_argument("--disco-arch", default="arm", help="arch used to probe the CDN for latest (default: arm)")
     p.add_argument("--key-file", help="SSH private key (default: auto-detect ~/.ssh/id_ed25519, id_rsa, ...)")

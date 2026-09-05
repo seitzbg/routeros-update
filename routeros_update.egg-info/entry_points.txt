@@ -1,0 +1,2 @@
+[console_scripts]
+routeros-update = routeros_update:main

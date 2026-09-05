@@ -9,7 +9,7 @@ import pytest
 
 # load the hyphen-named CLI module by path
 _SPEC = importlib.util.spec_from_file_location(
-    "routeros_update", Path(__file__).resolve().parent.parent / "routeros-update.py"
+    "routeros_update", Path(__file__).resolve().parent.parent / "routeros_update.py"
 )
 ru = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(ru)
