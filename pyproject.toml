@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,12 +7,12 @@ name = "routeros-update"
 version = "0.1.0"
 description = "Update MikroTik RouterOS across a fleet by fetching the package locally and pushing it over SSH"
 readme = "README.md"
-requires-python = ">=3.9"
-license = { file = "LICENSE" }
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Bryan Seitz" }]
 keywords = ["mikrotik", "routeros", "netmiko", "ssh", "upgrade", "npk"]
 classifiers = [
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Environment :: Console",
     "Topic :: System :: Networking",
