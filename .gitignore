@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 inventory.yml
 *.npk
+build/
+dist/
+*.egg-info/
