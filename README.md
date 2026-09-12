@@ -156,10 +156,11 @@ python3 -m pytest tests/test_routeros_update.py
 - Designed for the **stable channel**. Versions are compared numerically, so a switch
   running a prerelease (e.g. `7.20rc1`) is treated as its numeric version; pinning a
   prerelease with `--version` is rejected.
-- With `accept-new`, the **first** contact with a switch trusts and records its key in
-  `~/.ssh/known_hosts`. If you legitimately reinstall/replace a switch afterwards,
-  remove its stale `known_hosts` line (or use `--insecure-host-key`) so the new key is
-  accepted.
+- With `accept-new`, the **first** contact with a switch trusts and records its key
+  (scp appends to `~/.ssh/known_hosts`; the SSH session persists to a tool-managed
+  `~/.ssh/known_hosts_routeros-update` so a changed key is caught on later runs). If you
+  legitimately reinstall/replace a switch afterwards, remove its stale entries from both
+  files (or use `--insecure-host-key`) so the new key is accepted.
 
 ## License
 

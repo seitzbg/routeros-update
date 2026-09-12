@@ -147,6 +147,52 @@ def test_extract_package_npk_missing_returns_none(tmp_path):
     assert ru.extract_package_npk(zp, "switch-marvell", "7.16", "arm", tmp_path) is None
 
 
+def test_extract_package_npk_rejects_truncated_member(tmp_path):
+    # a member too small to be a real NPK must not be uploaded to a switch
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("wireless-7.16-arm.npk", b"stub")
+    zp = tmp_path / "all_packages-arm-7.16.zip"
+    zp.write_bytes(buf.getvalue())
+    with pytest.raises(ValueError):
+        ru.extract_package_npk(zp, "wireless", "7.16", "arm", tmp_path)
+
+
+def test_validate_zip_bytes_rejects_non_zip():
+    with pytest.raises(ValueError):
+        ru._validate_zip_bytes(b"x" * 6000, None)  # big enough, but not a zip
+
+
+def test_validate_zip_bytes_accepts_real_zip():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("wireless-7.16-arm.npk", b"y" * 6000)
+    ru._validate_zip_bytes(buf.getvalue(), None)  # does not raise
+
+
+def test_download_all_packages_validates_zip(tmp_path, monkeypatch):
+    # a corrupt all_packages download must be rejected before extraction (CodeRabbit #1)
+    monkeypatch.setattr(ru.urllib.request, "urlopen",
+                        _fake_urlopen({"all_packages": _FakeResp(200, b"not a zip" * 600, {})}))
+    with pytest.raises(ValueError):
+        ru.download_all_packages("7.16", "arm", tmp_path)
+
+
+@pytest.mark.parametrize("after,ok", [
+    ({"wireless": "7.16", "container": "7.16"}, True),
+    ({"wireless": "7.16"}, False),                      # container gone -> fail
+    ({"wireless": "7.16", "container": None}, False),   # unreadable version -> fail
+    ({"wireless": "7.16", "container": "7.15"}, False), # still behind -> fail
+])
+def test_check_packages_at_target_fails_safe(after, ok):
+    extras = ["wireless", "container"]
+    if ok:
+        ru.check_packages_at_target(extras, after, "7.16")  # no raise
+    else:
+        with pytest.raises(RuntimeError):
+            ru.check_packages_at_target(extras, after, "7.16")
+
+
 def test_resolve_upgrade_files_main_only(tmp_path, monkeypatch):
     monkeypatch.setattr(ru, "download_npk",
                         lambda v, a, cd, **k: tmp_path / ru.npk_name(v, a))
@@ -357,6 +403,37 @@ def test_scp_push_insecure_opts(monkeypatch):
 def test_ssh_host_key_opts():
     assert ru._ssh_host_key_opts(False) == ["-o", "StrictHostKeyChecking=accept-new"]
     assert "UserKnownHostsFile=/dev/null" in ru._ssh_host_key_opts(True)
+
+
+def _fake_netmiko(monkeypatch):
+    import sys
+    import types
+    captured = {}
+    fake = types.ModuleType("netmiko")
+    fake.ConnectHandler = lambda **p: captured.update(p) or object()
+    monkeypatch.setitem(sys.modules, "netmiko", fake)
+    monkeypatch.setattr(ru, "default_key_file", lambda: None)
+    return captured
+
+
+def test_connect_persists_accepted_keys(tmp_path, monkeypatch):
+    # secure connect must give netmiko a writable known_hosts so accept-new survives
+    # across runs (CodeRabbit #2) -- else a changed key is re-trusted next process
+    captured = _fake_netmiko(monkeypatch)
+    khf = tmp_path / "kh"
+    monkeypatch.setattr(ru, "default_known_hosts", lambda: khf)
+    ru.connect("sw1", "admin")
+    assert captured["system_host_keys"] is True
+    assert captured["alt_host_keys"] is True
+    assert captured["alt_key_file"] == str(khf)
+    assert khf.exists()  # created up front so netmiko loads (and then persists) it
+
+
+def test_connect_insecure_loads_no_known_hosts(monkeypatch):
+    captured = _fake_netmiko(monkeypatch)
+    ru.connect("sw1", "admin", insecure=True)
+    assert captured["system_host_keys"] is False
+    assert "alt_host_keys" not in captured
 
 
 # --- reboot detection ---------------------------------------------------------

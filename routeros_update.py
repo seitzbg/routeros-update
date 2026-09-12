@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
 import re
 import socket
@@ -132,6 +133,21 @@ def is_main_package(name: str) -> bool:
 def required_extra_packages(installed_names) -> list[str]:
     """Installed packages other than the main one, whose matching NPKs must be uploaded too."""
     return sorted({n for n in installed_names if n and not is_main_package(n)})
+
+
+def check_packages_at_target(extras, after_pkgs: dict, target: str) -> None:
+    """Raise unless every required extra is present *and* reports `target` after a reboot.
+
+    An upgrade gate must fail safe: a package that is gone, or whose version could not be
+    read, is a verification failure, never a silent pass (a missing key and an unparsed
+    version both read as None otherwise).
+    """
+    gone = [p for p in extras if p not in after_pkgs]
+    if gone:
+        raise RuntimeError(f"package(s) missing after reboot: {', '.join(gone)}")
+    behind = [p for p in extras if after_pkgs[p] != target]
+    if behind:
+        raise RuntimeError(f"package(s) still behind after reboot: {', '.join(behind)}")
 
 
 def parse_packages(raw: str) -> dict[str, str | None]:
@@ -282,6 +298,13 @@ def _validate_npk_bytes(data: bytes, etag: str | None) -> None:
                 raise ValueError(f"MD5 mismatch: got {got}, CDN ETag {tag.lower()}")
 
 
+def _validate_zip_bytes(data: bytes, etag: str | None) -> None:
+    """Reject a bad all_packages archive before anything is extracted from it."""
+    _validate_npk_bytes(data, etag)  # size floor + MD5 ETag when the CDN gives a plain one
+    if not zipfile.is_zipfile(io.BytesIO(data)):
+        raise ValueError("all_packages download is not a valid zip archive")
+
+
 def _download_to_cache(url: str, dest: Path, validate=None, timeout: int = 300) -> Path:
     """Download `url` -> `dest` (atomic), integrity-checking and caching the result.
 
@@ -320,7 +343,7 @@ def download_npk(version: str, arch: str, cache_dir: Path, package: str = MAIN_P
 def download_all_packages(version: str, arch: str, cache_dir: Path, timeout: int = 600) -> Path:
     return _download_to_cache(
         all_packages_url(version, arch), cache_dir / all_packages_name(version, arch),
-        timeout=timeout,
+        validate=_validate_zip_bytes, timeout=timeout,
     )
 
 
@@ -331,8 +354,10 @@ def extract_package_npk(zip_path: Path, package: str, version: str, arch: str,
     with zipfile.ZipFile(zip_path) as z:
         if member not in z.namelist():
             return None
+        blob = z.read(member)
+        _validate_npk_bytes(blob, None)  # a plausible NPK, not a truncated/empty member
         dest = cache_dir / member
-        dest.write_bytes(z.read(member))
+        dest.write_bytes(blob)
     return dest
 
 
@@ -382,15 +407,33 @@ def default_key_file() -> str | None:
     return None
 
 
+def default_known_hosts() -> Path:
+    """A tool-managed known_hosts that Netmiko can *write*, so accept-new persists.
+
+    Netmiko's `system_host_keys` only *reads* ~/.ssh/known_hosts; newly accepted keys
+    would live only in memory and be re-trusted next run. A writable `alt_key_file`
+    makes paramiko's AutoAddPolicy save them, so a switch whose key later changes is
+    rejected across runs. scp keeps appending to ~/.ssh/known_hosts via accept-new,
+    and connect() runs before scp per switch, so this guards the upgrade path too.
+    """
+    return Path.home() / ".ssh" / "known_hosts_routeros-update"
+
+
 def connect(host: str, user: str, key_file: str | None = None, port: int = 22,
             insecure: bool = False, timeout: int = 20):
     from netmiko import ConnectHandler  # deferred so unit tests / --help need no netmiko
     kf = key_file or default_key_file()
     params = dict(device_type="mikrotik_routeros", host=host, port=port, username=user,
                   allow_agent=True, conn_timeout=timeout, fast_cli=False)
-    # accept-new host-key policy: load ~/.ssh/known_hosts so paramiko rejects a changed
-    # key (BadHostKeyException) while AutoAddPolicy still trusts a first-seen switch.
-    params["system_host_keys"] = not insecure
+    if insecure:
+        params["system_host_keys"] = False  # AutoAddPolicy, no known-hosts loaded
+    else:
+        # read ~/.ssh/known_hosts, plus a writable store so accept-new actually persists;
+        # a changed key still raises BadHostKeyException from either store.
+        khf = default_known_hosts()
+        khf.parent.mkdir(parents=True, exist_ok=True)
+        khf.touch(exist_ok=True)  # netmiko loads alt_key_file only if it already exists
+        params.update(system_host_keys=True, alt_host_keys=True, alt_key_file=str(khf))
     # allow_agent + look_for_keys(=use_keys) means paramiko still falls back to the
     # ssh-agent and other default keys if kf is not the one the switch accepts.
     if kf:
@@ -541,10 +584,7 @@ def _do_os_upgrade(conn, sw, target, args, log, r):
         if r.after != target:
             raise RuntimeError(f"post-reboot version {r.after}, expected {target}")
         # every extra that was installed must now report the target version too
-        after_pkgs = read_installed_packages(conn)
-        behind = [p for p in extras if after_pkgs.get(p) not in (target, None)]
-        if behind:
-            raise RuntimeError(f"package(s) still behind after reboot: {', '.join(behind)}")
+        check_packages_at_target(extras, read_installed_packages(conn), target)
     except Exception:
         _safe_disconnect(conn)  # the freshly-reconnected session is ours to close on failure
         raise
@@ -680,7 +720,8 @@ def render_summary(results, target, dry_run: bool) -> None:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--upgrade", action="store_true", help="actually push + reboot (default: dry run)")
-    p.add_argument("--only", nargs="+", metavar="HOST", help="limit to these switch hostnames")
+    p.add_argument("--only", nargs="+", metavar="NAME",
+                   help="limit to these inventory hostnames (the keys under the routeros group)")
     p.add_argument("--version", help="pin an exact target version (skip CDN discovery)")
     p.add_argument("--no-firmware", action="store_true", help="skip the RouterBOARD firmware step")
     p.add_argument("--insecure-host-key", action="store_true",
